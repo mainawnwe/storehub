@@ -6,3 +6,255 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ===========================
+// ENUMS
+// ===========================
+
+enum Role {
+  OWNER
+  MANAGER
+  CASHIER
+  STOCK_KEEPER
+}
+
+enum MovementType {
+  PURCHASE_IN
+  SALE_OUT
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+  RETURN
+  DAMAGE
+}
+
+enum PaymentMethod {
+  CASH
+  KBZPAY
+  WAVE
+  BANK_TRANSFER
+  CREDIT
+}
+
+enum SaleStatus {
+  COMPLETED
+  REFUNDED
+  PARTIAL_REFUND
+}
+
+// ===========================
+// CORE ENTITIES
+// ===========================
+
+model Branch {
+  id        String   @id @default(uuid())
+  name      String
+  address   String?
+  phone     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users          User[]
+  stockMovements StockMovement[]
+  sales          Sale[]
+
+  @@map("branches")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(CASHIER)
+  isActive     Boolean  @default(true)
+  branchId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  branch         Branch?         @relation(fields: [branchId], references: [id])
+  sales          Sale[]
+  stockMovements StockMovement[]
+
+  @@index([branchId])
+  @@map("users")
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  sku         String   @unique
+  barcode     String?  @unique
+  name        String
+  description String?
+  unit        String   @default("pcs") // pcs, kg, box, etc.
+  costPrice   Decimal  @db.Decimal(12, 2) @default(0)
+  sellPrice   Decimal  @db.Decimal(12, 2) @default(0)
+  isActive    Boolean  @default(true)
+  categoryId  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category       Category?        @relation(fields: [categoryId], references: [id])
+  stockMovements StockMovement[]
+  saleItems      SaleItem[]
+  purchaseItems  PurchaseItem[]
+
+  @@index([categoryId])
+  @@index([name])
+  @@map("products")
+}
+
+// ===========================
+// INVENTORY (Event Log Pattern)
+// ===========================
+
+model StockMovement {
+  id         String       @id @default(uuid())
+  productId  String
+  branchId   String
+  quantity   Int          // positive = in, negative = out
+  type       MovementType
+  refType    String?      // "SALE", "PURCHASE", "ADJUSTMENT"
+  refId      String?      // ID of the related sale/purchase
+  note       String?
+  createdById String?
+  createdAt  DateTime     @default(now())
+
+  product   Product @relation(fields: [productId], references: [id])
+  branch    Branch  @relation(fields: [branchId], references: [id])
+  createdBy User?   @relation(fields: [createdById], references: [id])
+
+  @@index([productId, branchId])
+  @@index([refType, refId])
+  @@map("stock_movements")
+}
+
+// ===========================
+// PURCHASES
+// ===========================
+
+model Supplier {
+  id        String   @id @default(uuid())
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases Purchase[]
+
+  @@map("suppliers")
+}
+
+model Purchase {
+  id          String   @id @default(uuid())
+  supplierId  String
+  branchId    String
+  referenceNo String?  @unique
+  totalAmount Decimal  @db.Decimal(12, 2) @default(0)
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supplier Supplier       @relation(fields: [supplierId], references: [id])
+  items    PurchaseItem[]
+
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String  @id @default(uuid())
+  purchaseId String
+  productId  String
+  quantity   Int
+  unitCost   Decimal @db.Decimal(12, 2)
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@map("purchase_items")
+}
+
+// ===========================
+// SALES / POS
+// ===========================
+
+model Customer {
+  id        String   @id @default(uuid())
+  name      String
+  phone     String?  @unique
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sales Sale[]
+
+  @@map("customers")
+}
+
+model Sale {
+  id          String     @id @default(uuid())
+  branchId    String
+  userId      String
+  customerId  String?
+  invoiceNo   String     @unique
+  status      SaleStatus @default(COMPLETED)
+  subtotal    Decimal    @db.Decimal(12, 2) @default(0)
+  discount    Decimal    @db.Decimal(12, 2) @default(0)
+  tax         Decimal    @db.Decimal(12, 2) @default(0)
+  totalAmount Decimal    @db.Decimal(12, 2) @default(0)
+  note        String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  branch   Branch     @relation(fields: [branchId], references: [id])
+  user     User       @relation(fields: [userId], references: [id])
+  customer Customer?  @relation(fields: [customerId], references: [id])
+  items    SaleItem[]
+  payments Payment[]
+
+  @@index([branchId, createdAt])
+  @@index([userId])
+  @@map("sales")
+}
+
+model SaleItem {
+  id        String  @id @default(uuid())
+  saleId    String
+  productId String
+  quantity  Int
+  unitPrice Decimal @db.Decimal(12, 2)
+  discount  Decimal @db.Decimal(12, 2) @default(0)
+  total     Decimal @db.Decimal(12, 2)
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("sale_items")
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  saleId        String
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(12, 2)
+  referenceNo   String?       // KBZPay txn id, etc.
+  createdAt     DateTime      @default(now())
+
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
